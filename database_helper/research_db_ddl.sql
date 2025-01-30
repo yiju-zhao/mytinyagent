@@ -77,6 +77,9 @@ JOIN conference c ON ci.conference_id = c.conference_id;
   - pdf_path (VARCHAR): 论文 PDF 的文件路径或 URL
   - citation_count (INTEGER): 论文的引用次数
   - award (VARCHAR): 论文获奖情况（如 best paper, best paper runner 等，可以由逗号分隔）
+  - Digital Object Identifier
+  - Link to code repository: 论文代码库链接
+  - Link to support materials: 补充材料链接
 */
 
 -- paper table create
@@ -93,6 +96,9 @@ CREATE TABLE paper (
     pdf_path VARCHAR(255),                -- 论文 PDF 路径或 URL
     citation_count INTEGER DEFAULT 0,     -- 论文引用次数，默认为 0
     award VARCHAR(255),                   -- 获奖情况（例如 best paper, best paper runner）
+    doi VARCHAR(255),                      -- Digital Object Identifier
+    code_url VARCHAR(255),                 -- Link to code repository
+    supplementary_material_url VARCHAR(255), -- Link to supplementary materials
     CONSTRAINT fk_instance FOREIGN KEY (instance_id) REFERENCES conference_instance(instance_id) -- 外键关联
 );
 
@@ -158,6 +164,26 @@ CREATE TABLE author (
     google_scholar_url VARCHAR(255),             -- Google Scholar 主页
     home_website VARCHAR(255),                   -- 个人主页
     nationality VARCHAR(100)                     -- 国籍
+);
+
+/*
+  Table Definition: paper_authors
+  ------------------------
+  - Links papers with their authors, including author order
+  - paper_id (INTEGER): Foreign key to paper table
+  - author_id (INTEGER): Foreign key to author table
+  - author_order (INTEGER): Order of authors in the paper
+*/
+
+--paper_authors table create
+CREATE TABLE paper_authors (
+    paper_id INTEGER NOT NULL,
+    author_id INTEGER NOT NULL,
+    author_order INTEGER NOT NULL,  -- Position in author list (1 for first author, etc.)
+    is_corresponding BOOLEAN DEFAULT FALSE,  -- Indicates if this is the corresponding author
+    PRIMARY KEY (paper_id, author_id),
+    FOREIGN KEY (paper_id) REFERENCES paper(paper_id) ON DELETE CASCADE,
+    FOREIGN KEY (author_id) REFERENCES author(author_id) ON DELETE CASCADE
 );
 
 
@@ -323,3 +349,20 @@ FROM paper p
 JOIN paper_references pr ON p.paper_id = pr.paper_id
 JOIN reference r ON pr.reference_id = r.reference_id
 WHERE p.paper_id = 1;  -- 假设查询论文 ID 为 1 的所有参考文献
+
+
+/*
+  Table Definition: paper_reviews
+  ------------------------
+  - Stores reviews and comments about papers
+*/
+CREATE TABLE paper_reviews (
+    review_id SERIAL PRIMARY KEY, -- 主键，唯一标识每篇审稿
+    paper_id INTEGER NOT NULL, -- 论文 ID，关联到 paper 表
+    reviewer_id INTEGER,  -- NULL for 匿名评审
+    review_text TEXT NOT NULL,
+    rating INTEGER CHECK (rating BETWEEN 1 AND 5),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (paper_id) REFERENCES paper(paper_id) ON DELETE CASCADE,
+    FOREIGN KEY (reviewer_id) REFERENCES author(author_id) ON DELETE SET NULL
+);
