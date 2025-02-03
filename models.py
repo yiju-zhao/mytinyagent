@@ -5,6 +5,7 @@ from db import Base
 
 Base = declarative_base()
 
+# 会议信息表
 class Conference(Base):
     __tablename__ = "conference"
     
@@ -23,6 +24,7 @@ class Conference(Base):
     def __repr__(self):
         return f"<Conference(id={self.conference_id}, name={self.name})>"
 
+# 会议实例表
 class ConferenceInstance(Base):
     __tablename__ = "conference_instance"
     
@@ -43,6 +45,7 @@ class ConferenceInstance(Base):
     def __repr__(self):
         return f"<ConferenceInstance(id={self.instance_id}, name={self.name}， year={self.year})>"
 
+# 文章信息表
 class Paper(Base):
     __tablename__ = "paper"
     
@@ -80,6 +83,7 @@ class Paper(Base):
     def __repr__(self):
         return f"<Paper(id={self.paper_id},title={self.title}, year={self.year}, TLDR={self.TLDR})>"
 
+# 论文内容向量表
 class ContentEmbedding(Base):
     __tablename__ = "content_embedding"
     
@@ -95,6 +99,7 @@ class ContentEmbedding(Base):
     def __repr__(self):
         return f"<Reference(id={self.embedding_id}, paper_id={self.paper_id})>"
 
+# 作者信息表
 class Author(Base):
     __tablename__ = "author"
     
@@ -111,7 +116,7 @@ class Author(Base):
     def __repr__(self):
         return f"<Reference(id={self.author_id}, name={self.name}, email={self.email})>"
 
-
+# 文章-作者关系表
 class PaperAuthors(Base):
     __tablename__ = "paper_authors"
     
@@ -123,6 +128,7 @@ class PaperAuthors(Base):
     paper = relationship("Paper", back_populates="authors")
     author = relationship("Author", back_populates="papers")
 
+# 机构信息表
 class Affiliation(Base):
     __tablename__ = "affiliation"
     
@@ -140,12 +146,13 @@ class Affiliation(Base):
     def __repr__(self):
         return f"<Paper(id={self.affiliation_id},name={self.name}, type={self.type})>"
     
+# 作者-机构关系表
 class AuthorAffiliation(Base):
     __tablename__ = "author_affiliation"
     author_id = Column(Integer, ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)  # 关联作者
     affiliation_id = Column(Integer, ForeignKey('affiliation.affiliation_id', ondelete='CASCADE'), primary_key=True)  # 关联组织
 
-# Keyword 表模型
+# 关键字信息表
 class Keyword(Base):
     __tablename__ = 'keyword'
     
@@ -157,11 +164,13 @@ class Keyword(Base):
     def __repr__(self):
         return f"<Keyword(id={self.keyword_id}, keyword={self.keyword}, description={self.description})>"
 
+# 文章-关键字关系表
 class PaperKeyword(Base):
     __tablename__ = 'paper_keywords'
     paper_id = Column(Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True)  # 关联作者
     keyword_id = Column(Integer, ForeignKey('keyword.keyword_id', ondelete='CASCADE'), primary_key=True)  # 关联组织
 
+# 参考文献信息表
 class Reference(Base):
     __tablename__ = 'reference'
     
@@ -176,6 +185,7 @@ class Reference(Base):
     def __repr__(self):
         return f"<Reference(id={self.reference_id}, title={self.title}, author={self.author}, year={self.year})>"
 
+# 文章-参考文献关系表
 class PaperReference(Base):
     __tablename__ = 'paper_references' 
     paper_id = Column(Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True)  # 关联作者
