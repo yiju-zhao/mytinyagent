@@ -19,6 +19,7 @@ class PDFAnalyzer:
         
         self.pdf_path = pdf_path
         self.text = self._extract_text()
+        self.references_text = self._extract_text_after_references()
 
         # 初始化 OpenAI API
         self.api_key = os.getenv('OPENAI_API_KEY')
@@ -35,8 +36,13 @@ class PDFAnalyzer:
         - Superscript numbers/markers (¹,²,³ or *,+,#) next to author names
         - Institution names following these markers
         - Only extract high-level institutions (universities, research institutes, companies)
+                                                           
+        Step 2: Look for email addresses:
+        - Check for email addresses marked with symbols like *, †, or explicitly stated
+        - Look for email addresses in footnotes or contact information
+        - Look for corresponding author indicators which often have email addresses                                                   
 
-        Step 2: Match authors to their affiliations by:
+        Step 3: Match authors to their affiliations by:
         - Looking for superscript numbers/markers next to each author's name
         - Linking these markers to the corresponding institution affiliations
         - Some authors may have multiple affiliations marked by multiple superscripts
@@ -50,19 +56,18 @@ class PDFAnalyzer:
         {
             "institutions": [
                 {"id": "1", "name": "First Institution Name"},
-                {"id": "2", "name": "Second Institution Name"},
-                ...
+                {"id": "2", "name": "Second Institution Name"}
             ],
             "author_affiliations": [
                 {
                     "name": "Author Name",
-                    "affiliation_ids": ["1", "2"]  // IDs of affiliated institutions
-                },
-                ...
+                    "affiliation_ids": ["1", "2"],
+                    "email": "author@institution.edu"  // null if not found
+                }
             ]
         }
 
-        Example response for "John Smith¹,², Jane Doe²":
+        Example response for "John Smith¹,²*, Jane Doe²":
         {
             "institutions": [
                 {"id": "1", "name": "Stanford University"},
@@ -71,18 +76,71 @@ class PDFAnalyzer:
             "author_affiliations": [
                 {
                     "name": "John Smith",
-                    "affiliation_ids": ["1", "2"]
+                    "affiliation_ids": ["1", "2"],
+                    "email": "john.smith@stanford.edu"
                 },
                 {
                     "name": "Jane Doe",
-                    "affiliation_ids": ["2"]
+                    "affiliation_ids": ["2"],
+                    "email": null
                 }
             ]
+        }                                                                                                      
+
+        ''')
+        self.REFERENCES_PROMPT_TEMPLATE = Template('''
+        Given the following reference text from an academic paper, extract the key bibliographic information following these steps:
+        Step 1: Identify the core citation elements:
+        - Title of the paper/article
+        - Authors (all authors listed)
+        - Publication year
+        - Journal/Conference name
+        - URL/Web link (if available)
+
+        Step 2: Format special cases:
+        - For conference papers, use the conference name as journal
+        - For preprints, include the repository (e.g., arXiv) in journal field
+        - URLs can include arXiv links, DOI links, or direct web addresses
+
+        Reference text:
+        $context
+
+        Return ONLY a raw JSON object with this exact structure:
+        {
+            "title": "Complete title of the paper",
+            "authors": ["Author 1", "Author 2"],  // Array of author names
+            "year": 2024,  // null if not found
+            "journal": "Journal or Conference name",  // null if not found
+            "web_url": "https://..."  // null if not found
         }
 
-        If no affiliations are found for an author, use "Not Found" as the institution name.
-        ''')
+        Example responses:
 
+        For a journal paper:
+        {
+            "title": "High-performance large-scale image recognition without normalization",
+            "authors": ["Hugo Touvron", "Matthieu Cord", "Alexandre Sablayrolles"],
+            "year": 2021,
+            "journal": "Nature",
+            "web_url": "https://www.nature.com/articles/s41586-021-03819-2"
+        }
+
+        For a preprint:
+        {
+            "title": "Language Models are Few-Shot Learners",
+            "authors": ["Tom B. Brown", "Benjamin Mann"],
+            "year": 2020,
+            "journal": "arXiv",
+            "web_url": "https://arxiv.org/abs/2005.14165"
+        }
+
+        Notes:
+        - Extract complete titles, don't truncate
+        - Include all authors in the order listed
+        - For year, extract only the publication year (not submission/revision dates)
+        - Journal names should be complete, not abbreviated
+        - URLs should be complete and valid
+        ''')
 
     def _extract_text(self) -> str:
         """
@@ -98,7 +156,10 @@ class PDFAnalyzer:
     def get_full_text(self) -> str:
         return self.text
     
+    def get_references_text(self) -> str:
+        return self.references_text
     
+    # 提取 abstract 之前的文字
     def _extract_text_before_abstract(self) -> str:
         # 使用正则表达式进行不区分大小写的匹配
         short_text = self.text[:2000]
@@ -117,7 +178,22 @@ class PDFAnalyzer:
 
         return extracted_text
     
-    
+    # 提取 conclusion 之后的文字
+    def _extract_text_after_references(self) -> str:
+        # 使用正则表达式进行分大小写的匹配
+        full_text = self.text
+        match = re.search(r"References", full_text)
+        
+        if match:
+            references_position = match.end() # 获取 "References" 的位置
+            extracted_text = full_text[references_position:references_position+15000].strip()
+        else:
+            # 如果没有找到 "References"，直接返回后500个字符
+            return None
+        
+        return extracted_text
+
+    # 调用 LLM
     def _call_llm(self, prompt: str) -> str:
         """
         调用OpenAI的大模型来处理给定的提示并提取作者信息
@@ -175,8 +251,9 @@ class PDFAnalyzer:
             print(f"Error in LLM call: {str(e)}")
             raise
 
-
+    # 提取作者信息
     def extract_author_info(self, author_list: List[str]) -> Dict:
+        
         """
         从文本中提炼作者信息，默认作者信息在文本靠前部分。
         假设作者信息包含名字、邮箱、学校等信息
@@ -215,10 +292,13 @@ class PDFAnalyzer:
                 # If no affiliations found, use ["Not Found"]
                 if not affiliations:
                     affiliations = ["Not Found"]
+
+                email = author_data.get("email")
                 
                 author_info = {
                     "name": author_data["name"],
                     "affiliations": affiliations,
+                    "email": email,
                     "sequence": idx,
                     "is_corresponding": (idx == 0)
                 }
@@ -239,6 +319,46 @@ class PDFAnalyzer:
                 for idx, name in enumerate(author_list)
             ]
 
-
+    def extract_references_info(self) -> Dict:
+        """
+        从文本中提炼参考文献信息，默认参考文献在文本靠后部分。
+        假设参考文献信息包含标题、作者、年份等信息
+        :return: 返回提炼出的参考文献信息, 以JSON格式返回
+        """
+        references_info = []
+        references_context = self._extract_text_after_references()
+        
+        try:
+            # Single LLM call for all references
+            prompt = self.REFERENCES_PROMPT_TEMPLATE.substitute(
+                context=references_context
+            )
+            
+            extracted_data = self._call_llm(prompt)
+            
+            # Process each reference
+            for reference_data in enumerate(extracted_data.get("references", [])):
+                reference_info = {
+                    "title": reference_data.get("title", "Not Found"),
+                    "authors": reference_data.get("authors", ["Not Found"]),
+                    "year": reference_data.get("year", "Not Found"),
+                    "journal": reference_data.get("journal", "Not Found"),
+                }
+                references_info.append(reference_info)
+            
+            return references_info
+            
+        except Exception as e:
+            print(f"Error extracting references: {str(e)}")
+            # Fallback: create basic info for all references
+            return [
+                {
+                    "title": "Not Found",
+                    "authors": ["Not Found"],
+                    "year": "Not Found",
+                    "journal": "Not Found",
+                }
+                for idx in range(10)
+            ]
 
 
