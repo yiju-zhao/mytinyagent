@@ -1,8 +1,6 @@
-from datetime import datetime
-from sqlalchemy import TIMESTAMP, Table, CheckConstraint, Column, Date, Float, Integer, String, Text, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import TIMESTAMP, Table, Column, Date, Float, Integer, String, Text, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.dialects.postgresql import ARRAY
-from db import Base
 
 Base = declarative_base()
 
@@ -12,7 +10,7 @@ class Conference(Base):
     
     conference_id = Column(Integer, primary_key=True, autoincrement=True)  # 主键，自增
     name = Column(String(255), nullable=False, unique=True)  # 会议名称，唯一，不能为空
-    type = Column(String(255), nullable=False)  # 会议类型，不能为空
+    type = Column(String(255))  # 会议类型
     description = Column(Text)  # 会议描述，允许为空
 
     instance_to_conference = relationship("ConferenceInstance", back_populates="conference_to_instance")
@@ -30,8 +28,8 @@ class ConferenceInstance(Base):
     __tablename__ = "conference_instance"
     
     instance_id = Column(Integer, primary_key=True, autoincrement=True)  # 主键，自增
-    name = Column(String(255), nullable=False, unique=True)  # 会议实例名称，唯一，不能为空
     conference_id = Column(Integer, ForeignKey('conference.conference_id'), nullable=False)  # 外键，关联 `Conference` 表
+    conference_name = Column(String(255), nullable=False)  # 会议实例名称，唯一，不能为空
     year = Column(Integer, nullable=False)  # 会议举办年份，不能为空
     start_date = Column(Date)  # 会议开始日期
     end_date = Column(Date)  # 会议结束日期
@@ -56,14 +54,14 @@ class Reference(Base):
     year = Column(Integer)  # 参考文献出版年份
     journal = Column(String(255))  # 参考文献所属期刊名称
     web_url = Column(String(255))  # 参考文献的网页 URL 或指向原始论文的 URL
-    # 定义与 Paper 表的多对多关系，通过 paper_references 中间表
-    paper_to_reference = relationship("Paper", secondary="paper_references", back_populates="reference_to_paper")
+    # 定义与 Paper 表的多对多关系，通过 paper_reference 中间表
+    paper_to_reference = relationship("Paper", secondary="paper_reference", back_populates="reference_to_paper")
     def __repr__(self):
         return f"<Reference(id={self.reference_id}, title={self.title}, author={self.author}, year={self.year})>"
 
 # 文章-参考文献关系表
 class PaperReference(Base):
-    __tablename__ = 'paper_references' 
+    __tablename__ = 'paper_reference' 
     paper_id = Column(Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True)  # 关联论文
     reference_id = Column(Integer, ForeignKey('reference.reference_id', ondelete='CASCADE'), primary_key=True)  # 关联参考文献
 
@@ -74,9 +72,10 @@ class Paper(Base):
     paper_id = Column(Integer, primary_key=True, autoincrement=True)  # 主键，自增
     instance_id = Column(Integer, ForeignKey('conference_instance.instance_id'), nullable=False)  # 外键，关联 `ConferenceInstance` 表
     title = Column(String(255), nullable=False)  # 论文标题，不能为空
-    type = Column(String(50))  # 论文类型，例如 oral, poster
+    venue = Column(String(50))  # 论文类型，例如 oral, poster
     year = Column(Integer, nullable=False)  # 论文出版年份，不能为空
     publish_date = Column(Date)  # 论文发布日期
+    research_area = Column(String(255))  # 论文研究领域
     tldr = Column(Text)  # 论文简短总结
     abstract = Column(Text)  # 论文摘要
     content = Column(Text)  # 论文完整内容
@@ -84,8 +83,9 @@ class Paper(Base):
     citation_count = Column(Integer, default=0)  # 论文引用次数，默认为 0
     award = Column(String(255))  # 获奖情况（例如 best paper, best paper runner）
     doi = Column(String(255))  # Digital Object Identifier
-    code_url = Column(String(255))  # 论文代码库链接
-    supplementary_material_url = Column(String(255))  # 补充材料链接
+    url = Column(String(255))  # 论文链接
+    pdf_url = Column(String(255))  # 论文 PDF 链接
+    attachment_url = Column(String(255))  # 论文代码库链接
 
     # 定义与 ConferenceInstance 的关系
     instance_to_paper = relationship("ConferenceInstance", back_populates="paper_to_instance")
@@ -93,11 +93,11 @@ class Paper(Base):
     # 定于与 ContentEmbeding 的关系
     embedding_to_paper = relationship("ContentEmbedding", secondary="paper_embedding", back_populates="paper_to_embedding")
     # 定义与 authoer 的关系
-    author_to_paper = relationship("Author", secondary="paper_authors", back_populates="paper_to_author")
+    author_to_paper = relationship("Author", secondary="paper_author", back_populates="paper_to_author")
     # 定义与 keyword 的关系
-    keyword_to_paper = relationship("Keyword", secondary="paper_keywords", back_populates="paper_to_keyword")
+    keyword_to_paper = relationship("Keyword", secondary="paper_keyword", back_populates="paper_to_keyword")
     # 定义与 reference 的关系
-    reference_to_paper = relationship("Reference", secondary="paper_references", back_populates="paper_to_reference")
+    reference_to_paper = relationship("Reference", secondary="paper_reference", back_populates="paper_to_reference")
 
     # 创建索引，方便通过标题进行快速查找
     __table_args__ = (
@@ -140,7 +140,7 @@ class Author(Base):
     home_website = Column(String(255))  # 个人主页
     nationality = Column(String(100))  # 国籍
     # 多对多关系配置
-    paper_to_author = relationship("Paper", secondary="paper_authors", back_populates="author_to_paper")
+    paper_to_author = relationship("Paper", secondary="paper_author", back_populates="author_to_paper")
     affiliation_to_author = relationship("Affiliation", secondary="author_affiliation", back_populates="author_to_affiliation")
 
     __table_args__ = (
@@ -153,13 +153,13 @@ class Author(Base):
 
 # 文章-作者关系表
 # class PaperAuthors(Base):
-#     __tablename__ = "paper_authors"
+#     __tablename__ = "paper_author"
 #     paper_id = Column(Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True)  # 外键，关联 `Paper` 表
 #     author_id = Column(String(255), ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)  # 外键，关联 `Author` 表
 
 ### Define the association table for Paper-Author relationship
-paper_authors = Table(
-    'paper_authors',
+paper_author = Table(
+    'paper_author',
     Base.metadata,
     Column('paper_id', Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True),
     Column('author_id', String(255), ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)
@@ -172,7 +172,7 @@ class Affiliation(Base):
     affiliation_id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(255), nullable=False)      # 组织名称
     aliases = Column(ARRAY(String), nullable=True)  # 组织别名
-    type = Column(String(100), nullable=False)      # 类型（如 university, industry 等）
+    type = Column(String(100), nullable=True)      # 类型（如 university, industry 等）
     location = Column(String(255), nullable=True)                 # 地点
     website = Column(String(255), nullable=True)                   # 网站
     description = Column(Text, nullable=True)                      # 描述
@@ -197,14 +197,14 @@ class Keyword(Base):
     keyword_id = Column(Integer, primary_key=True)  # 自增主键
     keyword = Column(String(255), unique=True, nullable=False)  # 关键字，不能为空，唯一
     description = Column(Text)  # 关键字的描述
-    # 定义与 Paper 表的多对多关系，通过 paper_keywords 中间表
-    paper_to_keyword = relationship("Paper", secondary="paper_keywords", back_populates="keyword_to_paper")
+    # 定义与 Paper 表的多对多关系，通过 paper_keyword 中间表
+    paper_to_keyword = relationship("Paper", secondary="paper_keyword", back_populates="keyword_to_paper")
     def __repr__(self):
         return f"<Keyword(id={self.keyword_id}, keyword={self.keyword}, description={self.description})>"
 
 # 文章-关键字关系表
 class PaperKeyword(Base):
-    __tablename__ = 'paper_keywords'  # Ensure this matches the secondary table name used in the Paper class
+    __tablename__ = 'paper_keyword'  # Ensure this matches the secondary table name used in the Paper class
     paper_id = Column(Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True)  # 关联论文
     keyword_id = Column(Integer, ForeignKey('keyword.keyword_id', ondelete='CASCADE'), primary_key=True)  # 关联关键字
 
