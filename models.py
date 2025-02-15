@@ -110,6 +110,7 @@ class Paper(Base):
 class ContentEmbedding(Base):
     __tablename__ = "content_embedding"
     embedding_id = Column(Integer, primary_key=True, autoincrement=True)  # 自增主键
+    text = Column(Text, nullable=False)  # 存储原始文本
     embedding = Column(ARRAY(Float), nullable=False)  # 存储 768 维的论文内容向量
     
     # 定义与 `Paper` 表的关系
