@@ -1,364 +1,369 @@
+from collections import defaultdict
 import json
+import logging
 import os
 import re
 from time import sleep
 from markitdown import MarkItDown
-from string import Template
-from typing import List, Dict
-from openai import OpenAI
-from openai.types.beta.threads.message_create_params import (
-    Attachment,
-    AttachmentToolFileSearch,
-)
+from typing import List, Dict, Optional, Set
+
+
+from llm.base_llm import BaseLLM
+from config import PDFAnalyzerConfig
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 class PDFAnalyzer:
-    def __init__(self, pdf_path: str):
+    def __init__(self, title: str, abstract: str, author_names: List[str], author_ids:List[str], pdf_path: str, tldr: str, keywords:str, llm: BaseLLM):
+        if not isinstance(author_names, list):
+            raise TypeError("authors must be a list")
+        if not isinstance(llm, BaseLLM):
+            raise TypeError("llm must be an instance of BaseLLM")
+        if not pdf_path.endswith('.pdf'):
+            raise ValueError("pdf_path must be a PDF file")
         # 初始化 PDF 处理器 param pdf_path: PDF 文件路径
         if not os.path.exists(pdf_path):
             raise FileNotFoundError(f"文件 {pdf_path} 不存在!")
-        
+        self.title = title
+        self.abstract = abstract
+        self.author_names = author_names
+        self.author_ids = author_ids
         self.pdf_path = pdf_path
-        self.text = self._extract_text()
-        self.references_text = self._extract_text_after_references()
+        self.tldr = tldr
+        self.keywords = keywords
+        self.llm = llm
 
-        # 初始化 OpenAI API
-        self.api_key = os.getenv('OPENAI_API_KEY')
-        if not self.api_key:
-            raise ValueError("OpenAI API key must be provided either through constructor or OPENAI_API_KEY environment variable")
- 
-        self.openai_client = OpenAI(api_key=self.api_key)
+        self.text = None
+        self.authors_augmented_info_dict = {}
+        self.references_list = {}
+        self.embedding_list = []
+        self.conclusion = None
+        self.keywords = {}
 
-        # 定义提示词模版
-        self.AUTHOR_AFFILIATION_PROMPT_TEMPLATE = Template('''
-        Given the text from an academic paper and a list of author names, extract affiliations following these steps:
-
-        Step 1: First identify ALL institution affiliations in the text, looking for:
-        - Superscript numbers/markers (¹,²,³ or *,+,#) next to author names
-        - Institution names following these markers
-        - Only extract high-level institutions (universities, research institutes, companies)
-                                                           
-        Step 2: Look for email addresses:
-        - Check for email addresses marked with symbols like *, †, or explicitly stated
-        - Look for email addresses in footnotes or contact information
-        - Look for corresponding author indicators which often have email addresses                                                   
-
-        Step 3: Match authors to their affiliations by:
-        - Looking for superscript numbers/markers next to each author's name
-        - Linking these markers to the corresponding institution affiliations
-        - Some authors may have multiple affiliations marked by multiple superscripts
-                                                            
-        Text from paper:
-        $context
-
-        Author names: $author_names
-
-        Return ONLY a raw JSON object with this exact structure:
-        {
-            "institutions": [
-                {"id": "1", "name": "First Institution Name"},
-                {"id": "2", "name": "Second Institution Name"}
-            ],
-            "author_affiliations": [
-                {
-                    "name": "Author Name",
-                    "affiliation_ids": ["1", "2"],
-                    "email": "author@institution.edu"  // null if not found
-                }
-            ]
-        }
-
-        Example response for "John Smith¹,²*, Jane Doe²":
-        {
-            "institutions": [
-                {"id": "1", "name": "Stanford University"},
-                {"id": "2", "name": "Google Research"}
-            ],
-            "author_affiliations": [
-                {
-                    "name": "John Smith",
-                    "affiliation_ids": ["1", "2"],
-                    "email": "john.smith@stanford.edu"
-                },
-                {
-                    "name": "Jane Doe",
-                    "affiliation_ids": ["2"],
-                    "email": null
-                }
-            ]
-        }                                                                                                      
-
-        ''')
-        self.REFERENCES_PROMPT_TEMPLATE = Template('''
-        Given the following reference text from an academic paper, extract the key bibliographic information following these steps:
-        Step 1: Identify the core citation elements:
-        - Title of the paper/article
-        - Authors (all authors listed)
-        - Publication year
-        - Journal/Conference name
-        - URL/Web link (if available)
-
-        Step 2: Format special cases:
-        - For conference papers, use the conference name as journal
-        - For preprints, include the repository (e.g., arXiv) in journal field
-        - URLs can include arXiv links, DOI links, or direct web addresses
-
-        Reference text:
-        $context
-
-        Return ONLY a raw JSON object with this exact structure:
-        {
-            "title": "Complete title of the paper",
-            "authors": ["Author 1", "Author 2"],  // Array of author names
-            "year": 2024,  // null if not found
-            "journal": "Journal or Conference name",  // null if not found
-            "web_url": "https://..."  // null if not found
-        }
-
-        Example responses:
-
-        For a journal paper:
-        {
-            "title": "High-performance large-scale image recognition without normalization",
-            "authors": ["Hugo Touvron", "Matthieu Cord", "Alexandre Sablayrolles"],
-            "year": 2021,
-            "journal": "Nature",
-            "web_url": "https://www.nature.com/articles/s41586-021-03819-2"
-        }
-
-        For a preprint:
-        {
-            "title": "Language Models are Few-Shot Learners",
-            "authors": ["Tom B. Brown", "Benjamin Mann"],
-            "year": 2020,
-            "journal": "arXiv",
-            "web_url": "https://arxiv.org/abs/2005.14165"
-        }
-
-        Notes:
-        - Extract complete titles, don't truncate
-        - Include all authors in the order listed
-        - For year, extract only the publication year (not submission/revision dates)
-        - Journal names should be complete, not abbreviated
-        - URLs should be complete and valid
-        ''')
-
-    def _extract_text(self) -> str:
-        """
-        提取 PDF 中的纯文本
-
-        :return: 提取的文本内容
-        """
-        md = MarkItDown()
-        result = md.convert(self.pdf_path)
-        return result.text_content
+        # temp variables
+        self.text_lines = []
+        self.title_indices ={}
     
-    
-    def get_full_text(self) -> str:
-        return self.text
-    
-    def get_references_text(self) -> str:
-        return self.references_text
-    
-    # 提取 abstract 之前的文字
-    def _extract_text_before_abstract(self) -> str:
-        # 使用正则表达式进行不区分大小写的匹配
-        short_text = self.text[:2000]
-        match = re.search(r"abstract", short_text, re.IGNORECASE)
+    def parse_all(self) -> None:
+        """Parses the PDF document to extract structured information.
         
-        if match:
-            abstract_position = match.start()  # 获取 "Abstract" 的位置
-            extracted_text = short_text[:abstract_position].strip()
-        else:
-            # 如果没有找到 "Abstract"，直接返回前500个字符
-            extracted_text = short_text[:500].strip()
-
-        # 检查提取的文本长度是否小于10字符，我也怀疑是没有正确提取。假设：正常文章加作者应该大于10个
-        if len(extracted_text) < 10:
-            return short_text[:500].strip()
-
-        return extracted_text
-    
-    # 提取 conclusion 之后的文字
-    def _extract_text_after_references(self) -> str:
-        # 使用正则表达式进行分大小写的匹配
-        full_text = self.text
-        match = re.search(r"References", full_text)
+        The method performs the following steps:
+        1. Extracts text from PDF
+        2. Identifies section titles
+        3. Splits content into sections
+        4. Extracts abstract, authors, conclusion, keywords and references
+        5. Generates embeddings for text chunks
         
-        if match:
-            references_position = match.end() # 获取 "References" 的位置
-            extracted_text = full_text[references_position:references_position+15000].strip()
-        else:
-            # 如果没有找到 "References"，直接返回后500个字符
+        Raises:
+            FileNotFoundError: If PDF file doesn't exist
+            ValueError: If text extraction fails
+        """
+        # 1. 提取文本
+        logger.info("Extracting text from PDF")
+        self.text = self.extract_text(self.pdf_path)
+        self.text_lines =self.extract_text_lines(self.text)  # 去除空白行
+        
+        # 2. 识别标题行
+        logger.info("Detecting section titles")
+        self.title_indices = self.get_section_title_indices(self.text_lines)        
+        
+        # 3. 按标题行分块
+        logger.info("Splitting content into sections")
+        self.section_lines_dict = self.split_text_lines_by_section_title(self.text_lines, self.title_indices)
+
+        # 4. 提取摘要, 如果没有摘要标题，就提取前面的文字
+        if not self.abstract:
+            logger.info("Extracting abstract from section, since you did not provide one")
+            self.abstract = self.extract_abstract_text_from_paper(self.section_lines_dict)
+        
+        # 5. 提取作者信息
+        logger.info("Extracting author information")
+        self.authors_augmented_info_dict = self.extract_augmented_authors_info(self.llm, self.text_lines, self.title_indices, self.author_names, self.author_ids)
+        
+        # 6. 提取结论
+        logger.info("Extracting conclusion")
+        self.conclusion = self.extract_conclusion(self.section_lines_dict)
+
+        # 7. 提取参考文献信息
+        logger.info("Extracting references")
+        self.references_list = self.extract_formated_references_list(self.section_lines_dict)
+
+        # 8. 提取正文内容,并转化为ebedding
+        logger.info("Extracting main text and generating embeddings")
+        self.embedding_list = self.embed_main_text(self.llm, self.section_lines_dict)
+
+        # 9. 提取关键词
+        logger.info("Extracting keywords")
+        self.keywords = self.extract_keywords(self.llm, self.section_lines_dict, self.tldr, self.abstract, self.conclusion)
+
+    @staticmethod
+    def inference_text_by_llm(llm:BaseLLM, prompt: str) -> Optional[Dict]:
+        try:
+            response = llm.generate_response(prompt=prompt)
+            if not response:
+                logger.error("Empty response from LLM")
+                return None
+                
+            cleaned_text = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL).strip()
+            json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
+            
+            if not json_match:
+                logger.warning("No JSON found in response")
+                return None
+            # 处理字符串：清理换行符、转义字符，并加上数组括号
+            cleaned_data = json_match.group(0)
+            cleaned_data =f"[{cleaned_data.strip()}]"
+            logger.info(f"json response from LLM: {json.dumps(cleaned_data, indent=2, ensure_ascii=False)}")
+            return json.loads(cleaned_data)
+            
+        except Exception as e:
+            logger.error(f"Error in LLM inference: {str(e)}")
             return None
-        
-        return extracted_text
-
-    # 调用 LLM
-    def _call_llm(self, prompt: str) -> str:
-        """
-        调用OpenAI的大模型来处理给定的提示并提取作者信息
     
-        :param prompt: 给定的提示文本
-        :return: 提取的作者信息（字典格式）
-        :raises: ValueError 如果响应格式不正确
-        :raises: Exception 如果API调用失败
+    @staticmethod
+    def extract_text_lines(text) -> List[str]:
+        return [line.strip() for line in text.split("\n") if line.strip()]  # 去除空白行
+
+    @staticmethod
+    def extract_abstract_text_from_paper(section_lines:defaultdict) -> str:
+        if "abstract" in section_lines:
+            return '\n'.join(section_lines["abstract"])
+        else:
+            return "unable to extract abstract from the paper"
+    
+    @staticmethod
+    def extract_augmented_authors_info(llm:BaseLLM, text_lines, title_indices, author_names, author_ids) -> Dict:
+        abstract_index = title_indices.get("abstract")  # 获取 Abstract 标题的索引
+        author_context_lines =[]
+        if abstract_index is not None:
+            author_context_lines = text_lines[:abstract_index]  # 从文档开头到 Abstract 之前的所有行
+            logger.info(f"Extracted author info lines: {author_context_lines}")
+        else:
+            author_context_lines = text_lines[:10]  # 兜底逻辑，取前10行作为作者信息
+            logger.warning(f"Unable to find abstract title, using first 10 lines for author info")
+        
+        # compose a josn format
+        author_json = []
+        if author_names is None:
+            author_names = [""]
+        if author_ids is None:
+            author_ids = [""]
+        for author_name, author_id in zip(author_names, author_ids):
+            author = {
+                "name": author_name,
+                "author_ids": author_id,
+                "affiliation": None,
+                "email": None,
+                "contribution_order": 0,
+                "is_corresponding": True,
+                "nationality": ""
+            }
+            author_json.append(author)
+
+        return PDFAnalyzer.augment_author_info(llm, author_context_lines, author_json)
+
+    @staticmethod
+    def extract_conclusion(section_lines_dict:defaultdict) -> str:
+        if section_lines_dict.get("conclusion"):
+            conclusion_lines = section_lines_dict.get("conclusion")
+            return "\n".join(conclusion_lines)
+        else:
+            logger.warning(f"Unable to find conclusion title, skipping conclusion extraction")
+            return None
+
+    @staticmethod
+    def extract_formated_references_list(llm:BaseLLM, section_lines_dict:defaultdict) -> List[Dict]:
+        if section_lines_dict.get("references"):
+            reference_lines = section_lines_dict.get("references")
+            return PDFAnalyzer.argument_reference(llm, reference_lines)
+        else:
+            logger.warning(f"Unable to find references title, skipping reference extraction")
+            return None
+    
+    @staticmethod
+    def embed_main_text(llm:BaseLLM, section_chunks:defaultdict) -> List:
+        main_text_chunks =PDFAnalyzer.split_all_section_to_chunks(section_chunks,PDFAnalyzerConfig.MAX_LINE_PER_CHUNK,PDFAnalyzerConfig.OVERLAP_LINES)
+        embedding_list = []
+        for chunk in main_text_chunks:
+            embedding_list.append([chunk[0], chunk[1], chunk[2], llm.generate_text_embedding(chunk[2])])
+        return embedding_list
+
+    @staticmethod
+    def extract_keywords(llm:BaseLLM, section_chunks:defaultdict, tldr, abstract, conclusion) -> List:
+        keyword_text = ""
+        if section_chunks.get("keywords"):
+            keyword_text = '\n'.join(section_chunks["keywords"])
+        else:
+            logger.warning(f"Unable to find keywords section, skipping keyword extraction. Will try to summarize instead")
+        return PDFAnalyzer.argument_keywords(llm, tldr, keyword_text, abstract, conclusion)
+
+    @staticmethod
+    def extract_text(pdf_path) -> str:
+        """
+        Extract text from PDF
+        
+        Returns:
+            str: Extracted text content
+            
+        Raises:
+            Exception: If text extraction fails
         """
         try:
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",  # or "gpt-3.5-turbo"
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a helpful assistant that extracts author information from academic papers. Always return valid JSON."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.1,
-                max_tokens=1000,
-                n=1,
-                timeout=30
-            )
+            md = MarkItDown()
+            result = md.convert(pdf_path)
+            logger.info(f"Converted PDF to text: {result.text_content[:100]}\n")
             
-            if not response.choices:
-                raise Exception("Empty response from OpenAI")
-            
-            content = response.choices[0].message.content
-            # Remove any markdown formatting if present
-            content = content.replace('```json', '').replace('```', '').strip()
-            
-            # print(f"This is : {content}")
-            
-            # Parse and validate JSON response
-            try:
-                extracted_data = json.loads(content)
-                
-                # Validate expected fields
-                if isinstance(extracted_data, dict):
-                    return extracted_data
-                else:
-                    raise ValueError("Response is not a valid JSON object")
-                    
-            except json.JSONDecodeError:
-                raise ValueError(f"Invalid JSON response: {content}")
-                
-        except ValueError as e:
-            # Re-raise ValueError for invalid API key or response format
-            raise
+            return result.text_content
         except Exception as e:
-            print(f"Error in LLM call: {str(e)}")
-            raise
+            logger.error(f"Error extracting text from PDF: {str(e)}")
+            # Should raise exception instead of returning None since return type is str
+            raise e
+
+    @staticmethod
+    def split_text_lines_by_section_title(lines, title_indices) -> Dict:
+        """按照标题行分块"""
+        chunks = defaultdict(list)
+        sorted_sections = sorted(title_indices.items(), key=lambda x: x[1])  # 按出现顺序排序
+
+        for idx, (section, start_idx) in enumerate(sorted_sections):
+            end_idx = sorted_sections[idx + 1][1] if idx + 1 < len(sorted_sections) else len(lines)
+            chunks[section] = lines[start_idx:end_idx]
+        
+        return chunks
+    
+    @staticmethod
+    def get_section_title_indices(lines) -> Dict:
+        """检测标题行，返回标题索引"""
+        title_indices = {}
+        section_num = 0 # 对于 summary、limitation 这类标题，可能在多个位置出现，需要全部保留。加一个编码，保证独立
+        for i, line in enumerate(lines):
+            clean_line = re.sub(r"[^a-zA-Z\s]", "", line).strip().lower()
+            for section, keywords in PDFAnalyzerConfig.SECTION_TITLES.items():
+                if any(re.match(rf"^\s*(\d+([\.\-）]\d+)*[\.\-）]*\s*)?{re.escape(kw)}\s*$", clean_line, re.IGNORECASE) for kw in keywords):
+                    if (section in title_indices):
+                        title_indices[section+"_"+str(section_num)] = i
+                        section_num += 1
+                        logger.info(f"Detected title: {section} at line {i}")
+                    else:
+                        title_indices[section] = i
+                    break
+        return title_indices
+    
 
     # 提取作者信息
-    def extract_author_info(self, author_list: List[str]) -> Dict:
-        
-        """
-        从文本中提炼作者信息，默认作者信息在文本靠前部分。
-        假设作者信息包含名字、邮箱、学校等信息
-        author_names: 字符串，逗号分隔。已知的名字，可以作为输入，作为大模型推理的上下文
-        :return: 返回提炼出的作者信息, 以JSON格式返回
-        """
-        authors_info = []
-        author_str = ", ".join(author_list)
-
-        # 提取PDF的title 和abstraction 之前的文字
-        author_context = self._extract_text_before_abstract()
-        
-        try:
-            # Single LLM call for all authors
-            prompt = self.AUTHOR_AFFILIATION_PROMPT_TEMPLATE.substitute(
-                context=author_context,
-                author_names=author_str
+    def augment_author_info(llm:BaseLLM, context, author_json) -> Dict:
+        prompt = PDFAnalyzerConfig.AUTHOR_AFFILIATION_PROMPT_TEMPLATE.substitute(
+            context=context,
+            author_json=author_json
             )
-            
-            extracted_data = self._call_llm(prompt)
-            
-            # Create institution lookup dictionary
-            institution_lookup = {
-                inst["id"]: inst["name"] 
-                for inst in extracted_data.get("institutions", [])
-            }
-            
-            # Process each author's affiliations
-            for idx, author_data in enumerate(extracted_data.get("author_affiliations", [])):
-                # Get institution names for this author's affiliation IDs
-                affiliations = [
-                    institution_lookup.get(aff_id, "Not Found")
-                    for aff_id in author_data.get("affiliation_ids", [])
-                ]
-                
-                # If no affiliations found, use ["Not Found"]
-                if not affiliations:
-                    affiliations = ["Not Found"]
 
-                email = author_data.get("email")
-                
-                author_info = {
-                    "name": author_data["name"],
-                    "affiliations": affiliations,
-                    "email": email,
-                    "sequence": idx,
-                    "is_corresponding": (idx == 0)
-                }
-                authors_info.append(author_info)
-            
-            return authors_info
-            
-        except Exception as e:
-            print(f"Error extracting affiliations: {str(e)}")
-            # Fallback: create basic info for all authors
-            return [
-                {
-                    "name": name,
-                    "affiliations": ["Not Found"],
-                    "sequence": idx,
-                    "is_corresponding": (idx == 0)
-                }
-                for idx, name in enumerate(author_list)
-            ]
+        return PDFAnalyzer.inference_text_by_llm(llm, prompt)
 
-    def extract_references_info(self) -> Dict:
+    @staticmethod
+    def split_references_with_overlap(reference_lines, 
+                                      block_size=PDFAnalyzerConfig.REFERENCE_CHUNK_LINE_SIZE,
+                                      overlap=PDFAnalyzerConfig.REFERENCE_OVERLAP_LINES):    
+        # 计算每个参考文献块的开始和结束位置，并在相邻块之间添加重反
+        reference_chunks = []
+        for i in range(0, len(reference_lines), block_size - overlap):
+            chunk = "\n".join(reference_lines[i:i + block_size])
+            reference_chunks.append(chunk)
+        logger.info(f"Split references into {len(reference_chunks)} chunks")
+        for i, chunk in enumerate(reference_chunks[:5]):
+            logger.debug(f"Reference chunk {i}: {chunk[:100]}")
+        logger.debug(f"Reference chunks: {reference_chunks}")
+        return reference_chunks[:PDFAnalyzerConfig.REFERENCE_MAX_CHUNK_SIZE]
+
+    @staticmethod
+    def argument_reference(llm:BaseLLM, reference_lines) -> List[Dict]:
+        # 拆分reference 章节
+        reference_chunk = PDFAnalyzer.split_references_with_overlap(reference_lines,
+                                                        block_size=PDFAnalyzerConfig.REFERENCE_CHUNK_LINE_SIZE, 
+                                                        overlap=PDFAnalyzerConfig.REFERENCE_OVERLAP_LINES)
+        # 用来存储参考文献的列表
+        references_result_list = []
+        # 用于去重的字典
+        title_set = set()
+
+        for text in reference_chunk:
+            prompt = PDFAnalyzerConfig.REFERENCES_PROMPT_TEMPLATE.substitute(
+                reference_chunk_text=text
+                )
+            reference_info = PDFAnalyzer.inference_text_by_llm(llm, prompt)
+            if reference_info:
+                for ref in reference_info:
+                    title = ref.get("title")
+                    if ref.get("title") and title not in title_set:
+                        references_result_list.append(ref)
+                        # 将 title 加入去重集合
+                        title_set.add(title)
+                        logger.info(f"Extracted reference: {ref}")
+                    else:
+                        logger.warning(f"Duplicate or missing title: {title}")
+            else:
+                logger.warning(f"unable to reasoning the reference")
+        return references_result_list
+
+    @staticmethod
+    def split_all_section_to_chunks(section_chunks: Dict[str, List[str]], 
+        max_line_per_chunk: int = 25, 
+        overlap_lines: int = 5) -> List[List]:
+        if max_line_per_chunk <= 0:
+            raise ValueError("max_line_per_chunk must be positive")
+        if overlap_lines < 0:
+            raise ValueError("overlap_lines cannot be negative")
+        if overlap_lines >= max_line_per_chunk:
+            raise ValueError("overlap_lines must be less than max_line_per_chunk")
         """
-        从文本中提炼参考文献信息，默认参考文献在文本靠后部分。
-        假设参考文献信息包含标题、作者、年份等信息
-        :return: 返回提炼出的参考文献信息, 以JSON格式返回
+        按 Section 拆分文本，并进行 Chunk 切分，考虑标题标记、最大行数和重叠行数。
+
+        :param section_chunks: dict, 以 section title 为 key，存储对应的文本行
+        :param max_line_per_chunk: int, 每个 chunk 最大行数
+        :param overlap_lines: int, 允许的上下文重叠行数
+        :return: List[str]，每个 chunk 作为字符串存入列表
         """
-        references_info = []
-        references_context = self._extract_text_after_references()
+        text_chunks = []
+        chunk_id = 0
+        current_chunk = []
+        for section_title, content_lines in section_chunks.items():
+            if section_title in {"authors", "acknowledgments","references","appendix"}:  # 跳过作者, 感谢，附录和参考文献， 只提取正文，用于RAG 
+                continue  
+            
+            current_chunk = []
+            for i, line in enumerate(content_lines):
+                current_chunk.append(line)
+
+                # 当达到 max_line_per_chunk 时，存储当前 chunk，并留出 overlap
+                if len(current_chunk) >= max_line_per_chunk or i == len(content_lines) - 1:
+                    text_chunks.append([chunk_id, section_title, "\n".join(current_chunk).strip()])
+                    chunk_id += 1
+
+                    # 重叠部分：保留最后 overlap_lines 行作为下一个 chunk 的起点
+                    current_chunk = current_chunk[-overlap_lines:] if overlap_lines > 0 else []
         
-        try:
-            # Single LLM call for all references
-            prompt = self.REFERENCES_PROMPT_TEMPLATE.substitute(
-                context=references_context
-            )
-            
-            extracted_data = self._call_llm(prompt)
-            
-            # Process each reference
-            for reference_data in enumerate(extracted_data.get("references", [])):
-                reference_info = {
-                    "title": reference_data.get("title", "Not Found"),
-                    "authors": reference_data.get("authors", ["Not Found"]),
-                    "year": reference_data.get("year", "Not Found"),
-                    "journal": reference_data.get("journal", "Not Found"),
-                }
-                references_info.append(reference_info)
-            
-            return references_info
-            
-        except Exception as e:
-            print(f"Error extracting references: {str(e)}")
-            # Fallback: create basic info for all references
-            return [
-                {
-                    "title": "Not Found",
-                    "authors": ["Not Found"],
-                    "year": "Not Found",
-                    "journal": "Not Found",
-                }
-                for idx in range(10)
-            ]
+        # process the last chunk
+        if current_chunk:
+            text_chunks.append([chunk_id, section_title, "\n".join(current_chunk).strip()])
+        
+        logger.info(f"Split text into {len(text_chunks)} chunks")
 
+        return text_chunks
+
+    @staticmethod
+    def argument_keywords(llm:BaseLLM, tldr_text: str,initial_keywords:str, abstract_text:str, conclusion_text:str) -> List:
+        """
+        生成关键词列表
+
+        :param text: str, 输入文本
+        :return: List[str]，关键词列表
+        """
+        prompt = PDFAnalyzerConfig.KEYWORDS_PROMPT_TEMPLATE.substitute(
+            tldr_text=tldr_text,
+            initial_keywords=initial_keywords,
+            abstract_text=abstract_text,
+            conclusion_text=conclusion_text
+        )
+        return PDFAnalyzer.inference_text_by_llm(llm, prompt)
 
