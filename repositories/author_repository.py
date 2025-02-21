@@ -2,27 +2,28 @@ import re
 from models import Author, Affiliation
 from sqlalchemy import or_
 
+
 class AuthorRepository:
     def __init__(self, session):
         self.session = session
-    
+
     def _clean_name(self, name: str) -> str:
         """Clean name by removing special characters and standardizing format"""
         if not name:
             return name
-        
+
         # Convert to uppercase for standardization
         name = name.upper()
-        
+
         # Remove special characters and extra whitespace
-        name = re.sub(r'[^\w\s]', '', name)
-        name = re.sub(r'\s+', ' ', name).strip()
-        
+        name = re.sub(r"[^\w\s]", "", name)
+        name = re.sub(r"\s+", " ", name).strip()
+
         # Common abbreviation standardization
         replacements = {
-            'MASSACHUSETTS INSTITUTE OF TECHNOLOGY': 'MIT',
-            'MASS INST OF TECH': 'MIT',
-            'MASS INSTITUTE OF TECHNOLOGY': 'MIT',
+            "MASSACHUSETTS INSTITUTE OF TECHNOLOGY": "MIT",
+            "MASS INST OF TECH": "MIT",
+            "MASS INSTITUTE OF TECHNOLOGY": "MIT",
             # Add more common variations as needed
         }
         return replacements.get(name, name)
@@ -30,13 +31,19 @@ class AuthorRepository:
     def _get_affiliation(self, name: str) -> Affiliation:
         affiliation = self.session.query(Affiliation).filter_by(name=name).first()
         if not affiliation:
-                cleaned_name = self._clean_name(name)
-                affiliation = self.session.query(Affiliation).filter(
-                or_(
-                    Affiliation.aliases.contains([cleaned_name]),  # Check if cleaned_name is in aliases
-                    Affiliation.name == cleaned_name
+            cleaned_name = self._clean_name(name)
+            affiliation = (
+                self.session.query(Affiliation)
+                .filter(
+                    or_(
+                        Affiliation.aliases.contains(
+                            [cleaned_name]
+                        ),  # Check if cleaned_name is in aliases
+                        Affiliation.name == cleaned_name,
+                    )
                 )
-            ).first()
+                .first()
+            )
         # if not affiliation:
         #     raise ValueError(f"Affiliation {name} not found.")
         return affiliation
