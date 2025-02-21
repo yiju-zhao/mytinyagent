@@ -1,5 +1,6 @@
 from models import Conference
 
+
 class ConferenceRepository:
     def __init__(self, session):
         self.session = session
@@ -12,7 +13,6 @@ class ConferenceRepository:
         else:
             conference = Conference(name=name, **kwargs)
             self.session.add(conference)
-        
+
         self.session.commit()
         return conference
-

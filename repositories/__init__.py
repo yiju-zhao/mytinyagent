@@ -7,10 +7,12 @@ from .affiliation_repository import AffiliationRepository
 from .keyword_repository import KeywordRepository
 
 
-__all__ = ['PaperRepository', 
-           'AuthorRepository', 
-           'ConferenceRepository', 
-           'ConferenceInstanceRepository', 
-           'ReferenceRepository', 
-           'AffiliationRepository',
-           'KeywordRepository']
+__all__ = [
+    "PaperRepository",
+    "AuthorRepository",
+    "ConferenceRepository",
+    "ConferenceInstanceRepository",
+    "ReferenceRepository",
+    "AffiliationRepository",
+    "KeywordRepository",
+]
