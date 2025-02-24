@@ -86,9 +86,9 @@ class PDFAnalyzer:
         logger.info("Extracting conclusion")
         self.conclusion = self.extract_conclusion(self.section_lines_dict)
 
-        # 7. 提取参考文献信息
+        # 7. 提取参考文献信息 TODO: references的处理非常耗时，建议分开处理，待优化一下调用关系
         logger.info("Extracting references")
-        self.references_list = self.extract_formated_references_list(self.section_lines_dict)
+        self.references_list = self.extract_formated_references_list(self.llm, self.section_lines_dict)
 
         # 8. 提取正文内容,并转化为ebedding
         logger.info("Extracting main text and generating embeddings")
@@ -161,9 +161,14 @@ class PDFAnalyzer:
                 "nationality": ""
             }
             author_json.append(author)
-
-        return PDFAnalyzer.augment_author_info(llm, author_context_lines, author_json)
-
+        
+        augment_author_info = PDFAnalyzer.augment_author_info(llm, author_context_lines, author_json)
+        if augment_author_info:
+            return augment_author_info
+        else:
+            logger.warning("unable to get the augmented author info, fall back to the default one")
+            return author_json
+        
     @staticmethod
     def extract_conclusion(section_lines_dict:defaultdict) -> str:
         if section_lines_dict.get("conclusion"):
@@ -188,6 +193,7 @@ class PDFAnalyzer:
         embedding_list = []
         for chunk in main_text_chunks:
             embedding_list.append([chunk[0], chunk[1], chunk[2], llm.generate_text_embedding(chunk[2])])
+        logger.info(f"the main paper content has been slit into {len(embedding_list)} chunks")
         return embedding_list
 
     @staticmethod
@@ -286,8 +292,8 @@ class PDFAnalyzer:
         references_result_list = []
         # 用于去重的字典
         title_set = set()
-
-        for text in reference_chunk:
+         # TODO 去掉以下约束，当前reference 推理非常耗时，因此只做前2个chunk， 后续改为离线分析。
+        for text in reference_chunk[:2]:
             prompt = PDFAnalyzerConfig.REFERENCES_PROMPT_TEMPLATE.substitute(
                 reference_chunk_text=text
                 )

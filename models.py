@@ -13,7 +13,11 @@ class Conference(Base):
     type = Column(String(255))  # 会议类型
     description = Column(Text)  # 会议描述，允许为空
 
-    instance_to_conference = relationship("ConferenceInstance", back_populates="conference_to_instance")
+    instance_to_conference = relationship(
+        "ConferenceInstance",
+        back_populates="conference_to_instance",
+                cascade="all, delete-orphan"
+        )
 
     __table_args__ = (
         # 这是数据库级别的唯一约束
@@ -78,7 +82,9 @@ class Paper(Base):
     research_area = Column(String(255))  # 论文研究领域
     tldr = Column(Text)  # 论文简短总结
     abstract = Column(Text)  # 论文摘要
-    content = Column(Text)  # 论文完整内容
+    content_raw_text = Column(Text)  # 论文完整内容，纯文本
+    conclusion = Column(Text)  # 论文结论
+    reference_raw_text = Column(Text) # 参考文献的原始数据，用于后续批处理
     pdf_path = Column(String(255))  # 论文 PDF 路径或 URL
     citation_count = Column(Integer, default=0)  # 论文引用次数，默认为 0
     award = Column(String(255))  # 获奖情况（例如 best paper, best paper runner）
@@ -90,9 +96,7 @@ class Paper(Base):
     # 定义与 ConferenceInstance 的关系
     instance_to_paper = relationship("ConferenceInstance", back_populates="paper_to_instance")
 
-    # 定于与 ContentEmbeding 的关系
-    embedding_to_paper = relationship("ContentEmbedding", secondary="paper_embedding", back_populates="paper_to_embedding")
-    # 定义与 authoer 的关系
+     # 定义与 authoer 的关系
     author_to_paper = relationship("Author", secondary="paper_author", back_populates="paper_to_author")
     # 定义与 keyword 的关系
     keyword_to_paper = relationship("Keyword", secondary="paper_keyword", back_populates="paper_to_keyword")
@@ -102,41 +106,20 @@ class Paper(Base):
     # 创建索引，方便通过标题进行快速查找
     __table_args__ = (
         Index('idx_paper_title', 'title'),
+Index('idx_paper_year', 'year'),
+        Index('idx_paper_publish_date', 'publish_date'),
     )
     def __repr__(self):
         return f"<Paper(id={self.paper_id},title={self.title}, year={self.year}, tldr={self.tldr})>"
-
-# 论文内容向量表
-class ContentEmbedding(Base):
-    __tablename__ = "content_embedding"
-    embedding_id = Column(Integer, primary_key=True, autoincrement=True)  # 自增主键
-    text = Column(Text, nullable=False)  # 存储原始文本
-    embedding = Column(ARRAY(Float), nullable=False)  # 存储 768 维的论文内容向量
-    
-    # 定义与 `Paper` 表的关系
-    paper_to_embedding = relationship("Paper", secondary="paper_embedding", back_populates="embedding_to_paper")
-
-    # 创建 HNSW 索引 -  sqlachemy 不支持hnsw索引，可以考虑通过数据库来创建
-    # __table_args__ = (
-    #    Index('idx_content_embedding_hnsw', 'embedding', postgresql_using='gin'),
-    #)
-
-    def __repr__(self):
-        return f"<Embedding(id={self.embedding_id})>"
-    
-# 论文-向量关联表
-class PaperEmbeddingIndex(Base):
-    __tablename__ = "paper_embedding"
-    paper_id = Column(Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True)  
-    embedding_id = Column(Integer, ForeignKey('content_embedding.embedding_id', ondelete='CASCADE'), primary_key=True)  
 
 # 作者信息表
 class Author(Base):
     __tablename__ = "author"
     
-    author_id = Column(String(255), primary_key=True)  # 外部来源的作者ID (e.g., "~name")
-    name = Column(String(255), nullable=False)  # 作者名字，不能为空
-    email = Column(String(255))  # 邮箱，可为空
+    author_id = Column(Integer, primary_key=True, autoincrement=True)  # 主键，自增
+    external_id = Column(String(255), unique=True)  # 外部来源的作者ID (e.g., "~name")
+    name = Column(String(100), nullable=False)  # 作者名字，不能为空
+    email = Column(String(320))  # 邮箱，可为空
     google_scholar_url = Column(String(255))  # Google Scholar 主页
     home_website = Column(String(255))  # 个人主页
     nationality = Column(String(100))  # 国籍
@@ -156,14 +139,14 @@ class Author(Base):
 # class PaperAuthors(Base):
 #     __tablename__ = "paper_author"
 #     paper_id = Column(Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True)  # 外键，关联 `Paper` 表
-#     author_id = Column(String(255), ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)  # 外键，关联 `Author` 表
+#     author_id = Column(Integer), ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)  # 外键，关联 `Author` 表
 
 ### Define the association table for Paper-Author relationship
 paper_author = Table(
     'paper_author',
     Base.metadata,
     Column('paper_id', Integer, ForeignKey('paper.paper_id', ondelete='CASCADE'), primary_key=True),
-    Column('author_id', String(255), ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)
+    Column('author_id', Integer, ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)
 )
 
 # 机构信息表
@@ -188,7 +171,7 @@ class Affiliation(Base):
 # 作者-机构关系表
 class AuthorAffiliation(Base):
     __tablename__ = "author_affiliation"
-    author_id = Column(String(255), ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)  # 关联作者
+    author_id = Column(Integer, ForeignKey('author.author_id', ondelete='CASCADE'), primary_key=True)  # 关联作者
     affiliation_id = Column(Integer, ForeignKey('affiliation.affiliation_id', ondelete='CASCADE'), primary_key=True)  # 关联组织
 
 # 关键字信息表

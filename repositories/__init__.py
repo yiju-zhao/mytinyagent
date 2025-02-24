@@ -5,6 +5,7 @@ from .conference_instance_repository import ConferenceInstanceRepository
 from .reference_repository import ReferenceRepository
 from .affiliation_repository import AffiliationRepository
 from .keyword_repository import KeywordRepository
+from .embedding_repository import EmbeddingRepository
 
 
 __all__ = ['PaperRepository', 
@@ -13,4 +14,5 @@ __all__ = ['PaperRepository',
            'ConferenceInstanceRepository', 
            'ReferenceRepository', 
            'AffiliationRepository',
-           'KeywordRepository']
+           'KeywordRepository',
+           'EmbeddingRepository']

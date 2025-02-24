@@ -15,4 +15,10 @@ class ConferenceRepository:
         
         self.session.commit()
         return conference
+    
+    def get_conference_by_name(self, name: str) -> Conference:
+        conference = self.session.query(Conference).filter_by(name=name).first()
+        if not conference:
+            raise ValueError(f"Conference {name} not found.")
+        return conference
 

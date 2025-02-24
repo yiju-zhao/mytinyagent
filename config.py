@@ -52,9 +52,9 @@ class PDFAnalyzerConfig:
         # 论文拆分参数
     MAX_LINE_PER_CHUNK = 25  # 每个 chunk 最大行数
     OVERLAP_LINES = 5  # 上下文重叠行数
-    REFERENCE_CHUNK_LINE_SIZE = 30  # 参考文献一个chunk的行数量
+    REFERENCE_CHUNK_LINE_SIZE = 12  # 参考文献一个chunk的行数量,假设3行算一个reference
     REFERENCE_MAX_CHUNK_SIZE = 20 # 一篇文章的reference 假设有个最长，避免某些文章在reference 之后放了很长的不相干文字。以上两个数相乘
-    REFERENCE_OVERLAP_LINES = 4  # 参考文献块重叠行数
+    REFERENCE_OVERLAP_LINES = 3  # 参考文献块重叠行数
 
      # 定义提示词模版
     AUTHOR_AFFILIATION_PROMPT_TEMPLATE = Template('''

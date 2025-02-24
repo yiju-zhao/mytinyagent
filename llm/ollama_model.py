@@ -1,6 +1,9 @@
+from contextlib import contextmanager
 import logging
 from ollama import Client
 from typing import Optional, List, Dict
+
+import requests
 from .base_llm import BaseLLM
 
 # Configure logging
@@ -29,8 +32,18 @@ class OllamaModel(BaseLLM):
         self.bedding_model_name = ebedding_model_name
         self.user_role = user_role
         self.system_prompt = system_prompt
-        self.client = Client(host=base_url)
+        self.client = Client(host=base_url, timeout=300)
 
+    @contextmanager
+    def _api_session(self):
+        """Context manager for API connections"""
+        try:
+            yield self.client
+        finally:
+            if hasattr(self, 'client') and self.client:
+                self.client.close()
+                logger.debug("Closed API connection")
+    
     def generate_response(
         self,
         prompt: str,
@@ -56,7 +69,7 @@ class OllamaModel(BaseLLM):
         try:
             response = self.client.chat(
                 model=self.model_name,
-                messages=[{"role": self.user_role, "content": prompt}],
+                messages=[{"role": self.user_role, "content": prompt}]
             )
 
             logger.info(f"Response from Ollama model: {response}")
@@ -66,9 +79,20 @@ class OllamaModel(BaseLLM):
                 return None
 
             return response.message.content.strip()
+        except requests.exceptions.Timeout:
+            logger.error("Request to Ollama API timed out")
+            # 你可以选择返回一个默认值或执行其他操作
+            return None
         except Exception as e:
             raise RuntimeError(f"Ollama Client 请求失败: {e}")
     
     def generate_text_embedding(self, prompt):
         response = self.client.embeddings(model=self.bedding_model_name, prompt=prompt)
         return response.get("embedding", [])
+    
+    def __del__(self):
+        """Cleanup method to ensure resources are properly released"""
+        try:
+            self.client = None
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
